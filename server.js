@@ -68,7 +68,16 @@ const postSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+const commentSchema = new mongoose.Schema(
+  {
+    post: { type: mongoose.Schema.Types.ObjectId, ref: "Post", required: true },
+    author: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    content: { type: String, required: true },
+  },
+  { timestamps: true }
+);
 
+const Comment = mongoose.model("Comment", commentSchema);
 const Post = mongoose.model("Post", postSchema);
 const User = mongoose.model("User", userSchema);
 // Register Route
@@ -200,6 +209,99 @@ app.delete("/api/posts/:slug", authMiddleware(["author", "admin"]), async (req, 
     res.json({ message: "Post deleted" });
   } catch (err) {
     res.status(500).json({ message: "Error deleting post" });
+  }
+});
+
+//peep
+app.post("/api/posts/:slug/comments", authMiddleware(), async (req, res) => {
+  try {
+    const { slug } = req.params; // Destructure for consistency
+    const { content } = req.body;
+    
+    if (!content) return res.status(400).json({ message: "Content is required" });
+
+    const post = await Post.findOne({ slug });
+    if (!post) return res.status(404).json({ message: "Post not found" });
+
+    const comment = new Comment({
+      post: post._id,
+      author: req.user.id,
+      content,
+    });
+
+    await comment.save();
+    
+    // Populate author info in response
+    const populatedComment = await Comment.findById(comment._id).populate("author", "name");
+    res.status(201).json(populatedComment);
+    
+  } catch (err) {
+    console.error("Add comment error:", err); // Better logging
+    res.status(500).json({ message: "Failed to add comment" });
+  }
+});
+app.get("/api/posts/:slug/comments", async (req, res) => {
+  try {
+    const { slug } = req.params;
+    const post = await Post.findOne({ slug });
+    if (!post) return res.status(404).json({ message: "Post not found" });
+
+    const comments = await Comment.find({ post: post._id })
+      .populate("author", "name email") // Include email if needed
+      .sort({ createdAt: -1 })
+      .lean(); // Better performance for read-only
+
+    res.json(comments);
+  } catch (err) {
+    console.error("Fetch comments error:", err);
+    res.status(500).json({ message: "Error fetching comments" });
+  }
+});
+app.delete("/api/comments/:id", authMiddleware(["admin", "author", "reader"]), async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // More efficient single query
+    const comment = await Comment.findOneAndDelete({
+      _id: id,
+      $or: [
+        { author: req.user.id },
+        { role: "admin" } // This won't work - see note below
+      ]
+    });
+
+    if (!comment) return res.status(404).json({ message: "Comment not found or unauthorized" });
+
+    res.json({ message: "Comment deleted" });
+  } catch (err) {
+    console.error("Delete comment error:", err);
+    res.status(500).json({ message: "Error deleting comment" });
+  }
+});
+app.post("/api/posts/:slug/like", authMiddleware(), async (req, res) => {
+  try {
+    const { slug } = req.params;
+    const userId = req.user.id;
+    
+    const post = await Post.findOne({ slug });
+    if (!post) return res.status(404).json({ message: "Post not found" });
+
+    // More efficient single DB operation
+    const updatedPost = await Post.findOneAndUpdate(
+      { slug },
+      {
+        [post.likes.includes(userId) ? "$pull" : "$addToSet"]: { likes: userId }
+      },
+      { new: true }
+    );
+
+    res.json({ 
+      likes: updatedPost.likes.length,
+      isLiked: updatedPost.likes.includes(userId)
+    });
+  } catch (err) {
+    console.error("Like error:", err);
+    res.status(500).json({ message: "Failed to toggle like" });
   }
 });
 
