@@ -155,6 +155,7 @@ app.get("/api/posts", async (req, res) => {
 });
 app.get("/api/posts/:slug", async (req, res) => {
   try {
+    const { slug } = req.params;
     const post = await Post.findOne({ slug }).populate("author", "name");
     if (!post) return res.status(404).json({ message: "Post not found" });
     res.json(post);
@@ -164,6 +165,7 @@ app.get("/api/posts/:slug", async (req, res) => {
 });
 app.put("/api/posts/:slug", authMiddleware(["author", "admin"]), async (req, res) => {
   try {
+    const { slug } = req.params;
     const post = await Post.findOne({ slug });
     if (!post) return res.status(404).json({ message: "Post not found" });
 
@@ -186,6 +188,7 @@ app.put("/api/posts/:slug", authMiddleware(["author", "admin"]), async (req, res
 });
 app.delete("/api/posts/:slug", authMiddleware(["author", "admin"]), async (req, res) => {
   try {
+    const { slug } = req.params;
     const post = await Post.findOne({ slug });
     if (!post) return res.status(404).json({ message: "Post not found" });
 
