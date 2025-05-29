@@ -5,6 +5,7 @@ const dotenv = require("dotenv");
 const cors = require("cors");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
+const slugify = require("slugify");
 // Load environment variables
 dotenv.config();
 
@@ -56,7 +57,19 @@ const userSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+const postSchema = new mongoose.Schema(
+  {
+    title: { type: String, required: true },
+    slug: { type: String, unique: true },
+    content: { type: String, required: true },
+    author: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    tags: [String],
+    likes: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+  },
+  { timestamps: true }
+);
 
+const Post = mongoose.model("Post", postSchema);
 const User = mongoose.model("User", userSchema);
 // Register Route
 app.post("/api/auth/register", async (req, res) => {
@@ -110,6 +123,81 @@ app.post("/api/auth/login", async (req, res) => {
 // Example protected route
 app.get("/api/protected", authMiddleware(["admin", "author"]), (req, res) => {
   res.json({ message: `Hello ${req.user.role}, you are authenticated` });
+});
+app.post("/api/posts", authMiddleware(["author", "admin"]), async (req, res) => {
+  const { title, content, tags } = req.body;
+
+  try {
+    const slug = slugify(title, { lower: true });
+    const newPost = new Post({
+      title,
+      slug,
+      content,
+      tags,
+      author: req.user.id,
+    });
+
+    await newPost.save();
+    res.status(201).json(newPost);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to create post" });
+  }
+});
+app.get("/api/posts", async (req, res) => {
+  try {
+    const posts = await Post.find()
+      .populate("author", "name email")
+      .sort({ createdAt: -1 });
+    res.json(posts);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch posts" });
+  }
+});
+app.get("/api/posts/:slug", async (req, res) => {
+  try {
+    const post = await Post.findOne({ slug }).populate("author", "name");
+    if (!post) return res.status(404).json({ message: "Post not found" });
+    res.json(post);
+  } catch (err) {
+    res.status(500).json({ message: "Error fetching post" });
+  }
+});
+app.put("/api/posts/:slug", authMiddleware(["author", "admin"]), async (req, res) => {
+  try {
+    const post = await Post.findOne({ slug });
+    if (!post) return res.status(404).json({ message: "Post not found" });
+
+    if (post.author.toString() !== req.user.id && req.user.role !== "admin") {
+      return res.status(403).json({ message: "Unauthorized" });
+    }
+
+    const { title, content, tags } = req.body;
+
+    post.title = title || post.title;
+    post.content = content || post.content;
+    post.tags = tags || post.tags;
+    post.slug = slugify(post.title, { lower: true });
+
+    await post.save();
+    res.json(post);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to update post" });
+  }
+});
+app.delete("/api/posts/:slug", authMiddleware(["author", "admin"]), async (req, res) => {
+  try {
+    const post = await Post.findOne({ slug });
+    if (!post) return res.status(404).json({ message: "Post not found" });
+
+    if (post.author.toString() !== req.user.id && req.user.role !== "admin") {
+      return res.status(403).json({ message: "Unauthorized" });
+    }
+
+    await post.deleteOne();
+    res.json({ message: "Post deleted" });
+  } catch (err) {
+    res.status(500).json({ message: "Error deleting post" });
+  }
 });
 
 // Start server
