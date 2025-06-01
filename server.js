@@ -65,6 +65,8 @@ const postSchema = new mongoose.Schema(
     author: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     tags: [String],
     likes: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+    deleted: { type: Boolean, default: false, index: true }, // New field
+    deletedAt: { type: Date }
   },
   { timestamps: true }
 );
@@ -159,14 +161,14 @@ app.get("/api/posts", async (req, res) => {
   try {
     const { page = 1, limit = 10 } = req.query;
     
-    const posts = await Post.find()
+    const posts = await Post.find({ deleted: false })  // Add this filter
       .populate("author", "name email")
       .sort({ createdAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit)
       .lean();
       
-    const count = await Post.countDocuments();
+    const count = await Post.countDocuments({ deleted: false });  // Add this filter
     
     res.json({
       posts,
@@ -181,7 +183,8 @@ app.get("/api/posts", async (req, res) => {
 app.get("/api/posts/:slug", async (req, res) => {
   try {
     const { slug } = req.params;
-    const post = await Post.findOne({ slug }).populate("author", "name");
+    const post = await Post.findOne({ slug, deleted: false })  // Add this filter
+      .populate("author", "name");
     if (!post) return res.status(404).json({ message: "Post not found" });
     res.json(post);
   } catch (err) {
@@ -261,17 +264,23 @@ app.get("/api/posts/:slug/comments", async (req, res) => {
     const { slug } = req.params;
     const { page = 1, limit = 10 } = req.query;
     
-    const post = await Post.findOne({ slug });
+    const post = await Post.findOne({ slug, deleted: false });
     if (!post) return res.status(404).json({ message: "Post not found" });
 
-    const comments = await Comment.find({ post: post._id })
+    const comments = await Comment.find({ 
+      post: post._id,
+      deleted: false  // Add this filter
+    })
       .populate("author", "name email")
       .sort({ createdAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit)
       .lean();
       
-    const count = await Comment.countDocuments({ post: post._id });
+    const count = await Comment.countDocuments({ 
+      post: post._id,
+      deleted: false  // Add this filter
+    });
 
     res.json({
       comments,
@@ -286,20 +295,30 @@ app.get("/api/posts/:slug/comments", async (req, res) => {
 });
 app.delete("/api/comments/:id", authMiddleware(["admin", "author", "reader"]), async (req, res) => {
   try {
-    const { id } = req.params;
-    
-    // More efficient single query
-    const comment = await Comment.findOneAndDelete({
-      _id: id,
-      $or: [
-        { author: req.user.id },
-        { role: "admin" } // This won't work - see note below
-      ]
+    const comment = await Comment.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        deleted: false,
+        $or: [
+          { author: req.user.id },
+          { role: "admin" }
+        ]
+      },
+      { $set: { deleted: true, deletedAt: new Date() } },
+      { new: true }
+    );
+
+    if (!comment) {
+      return res.status(404).json({ 
+        message: "Comment not found, already deleted, or unauthorized"
+      });
+    }
+
+    res.json({ 
+      message: "Comment soft deleted",
+      commentId: comment._id,
+      deletedAt: comment.deletedAt
     });
-
-    if (!comment) return res.status(404).json({ message: "Comment not found or unauthorized" });
-
-    res.json({ message: "Comment deleted" });
   } catch (err) {
     console.error("Delete comment error:", err);
     res.status(500).json({ message: "Error deleting comment" });
@@ -345,19 +364,21 @@ app.get("/api/tags", async (req, res) => {
 app.get("/api/posts/tag/:tag", async (req, res) => {
   try {
     const { tag } = req.params;
-    const { page = 1, limit = 10 } = req.query; // Add pagination params
+    const { page = 1, limit = 10 } = req.query;
     
     const posts = await Post.find({ 
-      tags: { $regex: new RegExp(tag, 'i') } // Case-insensitive search
+      tags: { $regex: new RegExp(tag, 'i') },
+      deleted: false  // Add this filter
     })
       .populate("author", "name email")
       .sort({ createdAt: -1 })
-      .limit(limit * 1) // Convert to number
-      .skip((page - 1) * limit) // Calculate skip
+      .limit(limit * 1)
+      .skip((page - 1) * limit)
       .lean();
     
     const count = await Post.countDocuments({ 
-      tags: { $regex: new RegExp(tag, 'i') } 
+      tags: { $regex: new RegExp(tag, 'i') },
+      deleted: false  // Add this filter
     });
     
     res.json({
@@ -379,17 +400,20 @@ app.get("/api/search", async (req, res) => {
   }
 
   try {
-    const results = await Post.find(
-      { $text: { $search: q } },
-      { score: { $meta: "textScore" } }
-    )
+    const results = await Post.find({
+      $text: { $search: q },
+      deleted: false  // Add this filter
+    })
       .sort({ score: { $meta: "textScore" } })
       .limit(limit * 1)
       .skip((page - 1) * limit)
       .populate("author", "name email")
       .lean();
       
-    const count = await Post.countDocuments({ $text: { $search: q } });
+    const count = await Post.countDocuments({ 
+      $text: { $search: q },
+      deleted: false  // Add this filter
+    });
 
     res.json({
       results: results.length ? results : [],
@@ -400,6 +424,145 @@ app.get("/api/search", async (req, res) => {
   } catch (err) {
     console.error("Search error:", err);
     res.status(500).json({ message: "Search failed" });
+  }
+});
+//admin
+app.get("/api/admin/stats", authMiddleware(["admin"]), async (req, res) => {
+  try {
+    const [
+      totalUsers,
+      authors,
+      readers,
+      admins,
+      totalPosts,
+      activePosts,
+      deletedPosts,
+      totalComments
+    ] = await Promise.all([
+      User.countDocuments(),
+      User.countDocuments({ role: "author" }),
+      User.countDocuments({ role: "reader" }),
+      User.countDocuments({ role: "admin" }),
+      Post.countDocuments(),
+      Post.countDocuments({ deleted: false }),
+      Post.countDocuments({ deleted: true }),
+      Comment.countDocuments()
+    ]);
+
+    res.json({
+      users: { total: totalUsers, authors, readers, admins },
+      posts: { total: totalPosts, active: activePosts, deleted: deletedPosts },
+      comments: totalComments,
+      lastUpdated: new Date()
+    });
+  } catch (err) {
+    console.error("Admin stats error:", err);
+    res.status(500).json({ 
+      message: "Failed to fetch dashboard stats",
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+// Soft delete post
+app.delete("/api/admin/posts/:id", authMiddleware(["admin"]), async (req, res) => {
+  try {
+    const post = await Post.findOneAndUpdate(
+      { _id: req.params.id, deleted: false },
+      { $set: { deleted: true, deletedAt: new Date() } },
+      { new: true }
+    );
+
+    if (!post) {
+      return res.status(404).json({ 
+        message: "Post not found or already deleted"
+      });
+    }
+
+    // Soft delete all comments for this post
+    await Comment.updateMany(
+      { post: post._id },
+      { $set: { deleted: true, deletedAt: new Date() } }
+    );
+
+    res.json({ 
+      message: "Post and its comments soft deleted",
+      postId: post._id,
+      deletedAt: post.deletedAt,
+      commentsDeleted: true
+    });
+  } catch (err) {
+    console.error("Soft delete error:", err);
+    res.status(500).json({ 
+      message: "Failed to soft delete post",
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+// Restore post
+app.put("/api/admin/posts/:id/restore", authMiddleware(["admin"]), async (req, res) => {
+  try {
+    const post = await Post.findOneAndUpdate(
+      { _id: req.params.id, deleted: true },
+      { $set: { deleted: false }, $unset: { deletedAt: 1 } },
+      { new: true }
+    );
+
+    if (!post) {
+      return res.status(404).json({ 
+        message: "Post not found or already active"
+      });
+    }
+
+    // Restore all comments for this post
+    await Comment.updateMany(
+      { post: post._id },
+      { $set: { deleted: false }, $unset: { deletedAt: 1 } }
+    );
+
+    res.json({ 
+      message: "Post and its comments restored",
+      postId: post._id,
+      commentsRestored: true
+    });
+  } catch (err) {
+    console.error("Restore error:", err);
+    res.status(500).json({ 
+      message: "Failed to restore post",
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+app.get("/api/admin/deleted-posts", authMiddleware(["admin"]), async (req, res) => {
+  try {
+    const posts = await Post.find({ deleted: true })
+      .populate("author", "name email")
+      .sort({ deletedAt: -1 });
+    res.json(posts);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch deleted posts" });
+  }
+});
+app.put("/api/admin/comments/:id/restore", authMiddleware(["admin"]), async (req, res) => {
+  try {
+    const comment = await Comment.findOneAndUpdate(
+      { _id: req.params.id, deleted: true },
+      { $set: { deleted: false }, $unset: { deletedAt: 1 } },
+      { new: true }
+    );
+
+    if (!comment) {
+      return res.status(404).json({ 
+        message: "Comment not found or already active"
+      });
+    }
+
+    res.json({ 
+      message: "Comment restored",
+      commentId: comment._id
+    });
+  } catch (err) {
+    console.error("Restore comment error:", err);
+    res.status(500).json({ message: "Failed to restore comment" });
   }
 });
 // Start server
