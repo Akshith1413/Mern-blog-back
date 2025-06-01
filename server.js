@@ -68,6 +68,9 @@ const postSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// Create text index after schema definition
+postSchema.index({ title: "text", content: "text" });
 const commentSchema = new mongoose.Schema(
   {
     post: { type: mongoose.Schema.Types.ObjectId, ref: "Post", required: true },
@@ -154,10 +157,23 @@ app.post("/api/posts", authMiddleware(["author", "admin"]), async (req, res) => 
 });
 app.get("/api/posts", async (req, res) => {
   try {
+    const { page = 1, limit = 10 } = req.query;
+    
     const posts = await Post.find()
       .populate("author", "name email")
-      .sort({ createdAt: -1 });
-    res.json(posts);
+      .sort({ createdAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit)
+      .lean();
+      
+    const count = await Post.countDocuments();
+    
+    res.json({
+      posts,
+      totalPages: Math.ceil(count / limit),
+      currentPage: page,
+      totalPosts: count
+    });
   } catch (err) {
     res.status(500).json({ message: "Failed to fetch posts" });
   }
@@ -243,15 +259,26 @@ app.post("/api/posts/:slug/comments", authMiddleware(), async (req, res) => {
 app.get("/api/posts/:slug/comments", async (req, res) => {
   try {
     const { slug } = req.params;
+    const { page = 1, limit = 10 } = req.query;
+    
     const post = await Post.findOne({ slug });
     if (!post) return res.status(404).json({ message: "Post not found" });
 
     const comments = await Comment.find({ post: post._id })
-      .populate("author", "name email") // Include email if needed
+      .populate("author", "name email")
       .sort({ createdAt: -1 })
-      .lean(); // Better performance for read-only
+      .limit(limit * 1)
+      .skip((page - 1) * limit)
+      .lean();
+      
+    const count = await Comment.countDocuments({ post: post._id });
 
-    res.json(comments);
+    res.json({
+      comments,
+      totalPages: Math.ceil(count / limit),
+      currentPage: page,
+      totalComments: count
+    });
   } catch (err) {
     console.error("Fetch comments error:", err);
     res.status(500).json({ message: "Error fetching comments" });
@@ -304,7 +331,77 @@ app.post("/api/posts/:slug/like", authMiddleware(), async (req, res) => {
     res.status(500).json({ message: "Failed to toggle like" });
   }
 });
+//control
 
+app.get("/api/tags", async (req, res) => {
+  try {
+    const tags = await Post.distinct("tags", { tags: { $exists: true, $ne: [] } });
+    res.json(tags.filter(tag => tag)); // Remove any null/undefined tags
+  } catch (err) {
+    console.error("Fetch tags error:", err);
+    res.status(500).json({ message: "Failed to fetch tags" });
+  }
+});
+app.get("/api/posts/tag/:tag", async (req, res) => {
+  try {
+    const { tag } = req.params;
+    const { page = 1, limit = 10 } = req.query; // Add pagination params
+    
+    const posts = await Post.find({ 
+      tags: { $regex: new RegExp(tag, 'i') } // Case-insensitive search
+    })
+      .populate("author", "name email")
+      .sort({ createdAt: -1 })
+      .limit(limit * 1) // Convert to number
+      .skip((page - 1) * limit) // Calculate skip
+      .lean();
+    
+    const count = await Post.countDocuments({ 
+      tags: { $regex: new RegExp(tag, 'i') } 
+    });
+    
+    res.json({
+      posts,
+      totalPages: Math.ceil(count / limit),
+      currentPage: page,
+      totalPosts: count
+    });
+  } catch (err) {
+    console.error("Fetch posts by tag error:", err);
+    res.status(500).json({ message: "Failed to fetch posts by tag" });
+  }
+});
+app.get("/api/search", async (req, res) => {
+  const { q, page = 1, limit = 10 } = req.query;
+  
+  if (!q || q.trim().length < 3) {
+    return res.status(400).json({ message: "Search query must be at least 3 characters" });
+  }
+
+  try {
+    const results = await Post.find(
+      { $text: { $search: q } },
+      { score: { $meta: "textScore" } }
+    )
+      .sort({ score: { $meta: "textScore" } })
+      .limit(limit * 1)
+      .skip((page - 1) * limit)
+      .populate("author", "name email")
+      .lean();
+      
+    const count = await Post.countDocuments({ $text: { $search: q } });
+
+    res.json({
+      results: results.length ? results : [],
+      totalPages: Math.ceil(count / limit),
+      currentPage: page,
+      totalResults: count
+    });
+  } catch (err) {
+    console.error("Search error:", err);
+    res.status(500).json({ message: "Search failed" });
+  }
+});
 // Start server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
