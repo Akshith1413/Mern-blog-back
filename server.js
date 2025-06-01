@@ -78,7 +78,8 @@ const commentSchema = new mongoose.Schema(
     post: { type: mongoose.Schema.Types.ObjectId, ref: "Post", required: true },
     author: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     content: { type: String, required: true },
-    
+    deleted: { type: Boolean, default: false, index: true },
+    deletedAt: { type: Date }
   },
   { timestamps: true }
 );
