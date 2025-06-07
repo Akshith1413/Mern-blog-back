@@ -567,6 +567,73 @@ app.put("/api/admin/comments/:id/restore", authMiddleware(["admin"]), async (req
     res.status(500).json({ message: "Failed to restore comment" });
   }
 });
+// Add this after your existing auth routes
+app.get('/api/auth/me', authMiddleware(), async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('-password');
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    res.json({ user });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Author stats endpoint
+app.get('/api/authors/:id/stats', authMiddleware(['author', 'admin']), async (req, res) => {
+  try {
+    const authorId = req.params.id;
+    
+    // Verify the requesting user is either the author or an admin
+    if (req.user.role !== 'admin' && req.user.id !== authorId) {
+      return res.status(403).json({ message: 'Unauthorized' });
+    }
+
+    const [posts, comments] = await Promise.all([
+      Post.countDocuments({ author: authorId, deleted: false }),
+      Comment.countDocuments({ post: { $in: await Post.find({ author: authorId }).distinct('_id') } })
+    ]);
+
+    // Get total likes across all posts
+    const postsWithLikes = await Post.find({ author: authorId });
+    const likes = postsWithLikes.reduce((sum, post) => sum + post.likes.length, 0);
+
+    res.json({
+      posts,
+      likes,
+      comments
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Reader stats endpoint
+app.get('/api/readers/:id/stats', authMiddleware(['reader', 'admin']), async (req, res) => {
+  try {
+    const readerId = req.params.id;
+    
+    // Verify the requesting user is either the reader or an admin
+    if (req.user.role !== 'admin' && req.user.id !== readerId) {
+      return res.status(403).json({ message: 'Unauthorized' });
+    }
+
+    const [comments, likedPosts] = await Promise.all([
+      Comment.countDocuments({ author: readerId }),
+      Post.countDocuments({ likes: readerId })
+    ]);
+
+    // For bookmarks, you'd need to implement a bookmark system first
+    const bookmarks = 0; // Placeholder until you implement bookmarks
+
+    res.json({
+      likedPosts,
+      comments,
+      bookmarks
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 // Start server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
