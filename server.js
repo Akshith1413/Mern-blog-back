@@ -22,7 +22,12 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
-
+// Add security headers
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.removeHeader('X-Powered-By');
+  next();
+});
 // Health check route
 app.get("/", (req, res) => {
   res.send("API is running...");
